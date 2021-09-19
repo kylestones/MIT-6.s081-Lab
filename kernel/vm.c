@@ -131,7 +131,7 @@ kvmpa(uint64 va)
   uint64 off = va % PGSIZE;
   pte_t *pte;
   uint64 pa;
-  
+
   pte = walk(kernel_pagetable, va, 0);
   if(pte == 0)
     panic("kvmpa");
@@ -341,7 +341,7 @@ void
 uvmclear(pagetable_t pagetable, uint64 va)
 {
   pte_t *pte;
-  
+
   pte = walk(pagetable, va, 0);
   if(pte == 0)
     panic("uvmclear");
@@ -439,4 +439,37 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+// Recursively print page-table pages.
+void
+vm_walk_print(pagetable_t pagetable, int level)
+{
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+
+    if(pte & PTE_V) {
+      pagetable_t child = (pagetable_t)PTE2PA(pte);
+
+      printf("..");
+      for (int l = 1; l < level; l++) {
+        printf(" ..");
+      }
+      printf("%d: pte %p pa %p\n", i, pte, child);
+
+      if ((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        // 只有最后一级页表才会有 RWX 的权限
+        // this PTE points to a lower-level page table.
+        vm_walk_print(child, level + 1);
+      }
+    }
+  }
+}
+
+void vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", pagetable);
+
+  vm_walk_print(pagetable, 1);
 }
