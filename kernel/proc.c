@@ -26,20 +26,10 @@ void
 procinit(void)
 {
   struct proc *p;
-  
+
   initlock(&pid_lock, "nextpid");
   for(p = proc; p < &proc[NPROC]; p++) {
-      initlock(&p->lock, "proc");
-
-      // Allocate a page for the process's kernel stack.
-      // Map it high in memory, followed by an invalid
-      // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+    initlock(&p->lock, "proc");
   }
   kvminithart();
 }
@@ -76,13 +66,34 @@ myproc(void) {
 int
 allocpid() {
   int pid;
-  
+
   acquire(&pid_lock);
   pid = nextpid;
   nextpid = nextpid + 1;
   release(&pid_lock);
 
   return pid;
+}
+
+// Allocate a page for the process's kernel stack.
+// Map it high in memory, followed by an invalid
+// guard page.
+static int
+allocprockstack(struct proc *p)
+{
+  char *pa = kalloc();
+  if(pa == 0) {
+    panic("kproc kernel stack allocate");
+    return -1;
+  }
+  uint64 va = KSTACK(0); // 每个进程单独映射，无需关心其他进程的内核栈
+  if(mappages(p->kpagetable, va, PGSIZE, (uint64)pa, PTE_R | PTE_W) != 0) {
+    panic("process kernel stack map pages");
+    return -1;
+  }
+  p->kstack = va;
+
+  return 0;
 }
 
 // Look in the process table for an UNUSED proc.
@@ -104,7 +115,7 @@ allocproc(void)
   }
   return 0;
 
-found:
+ found:
   p->pid = allocpid();
 
   // Allocate a trapframe page.
@@ -116,6 +127,20 @@ found:
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  // process's kernel page table
+  if (kvmcomminit(&p->kpagetable) != 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  // process's kernel stack.
+  if (allocprockstack(p) != 0) {
     freeproc(p);
     release(&p->lock);
     return 0;
@@ -141,6 +166,14 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if (p->kpagetable) {
+    // not free physical pages
+    kvmcommunmap(p->kpagetable);
+    // free physical page
+    uvmunmap(p->kpagetable, p->kstack, 1, 1);
+    freewalk(p->kpagetable);
+  }
+
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -215,7 +248,7 @@ userinit(void)
 
   p = allocproc();
   initproc = p;
-  
+
   // allocate one user page and copy init's instructions
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
@@ -369,7 +402,7 @@ exit(int status)
   acquire(&p->lock);
   struct proc *original_parent = p->parent;
   release(&p->lock);
-  
+
   // we need the parent's lock in order to wake it up from wait().
   // the parent-then-child rule says we have to lock it first.
   acquire(&original_parent->lock);
@@ -440,7 +473,7 @@ wait(uint64 addr)
       release(&p->lock);
       return -1;
     }
-    
+
     // Wait for a child to exit.
     sleep(p, &p->lock);  //DOC: wait-sleep
   }
@@ -458,12 +491,15 @@ scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
-  
+
   c->proc = 0;
   for(;;){
+    // use kernel_pagetable when no process is running
+    kvminithart();
+
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
-    
+
     int found = 0;
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
@@ -473,6 +509,7 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        kvmchgpagetable(p->kpagetable);
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
@@ -559,7 +596,7 @@ void
 sleep(void *chan, struct spinlock *lk)
 {
   struct proc *p = myproc();
-  
+
   // Must acquire p->lock in order to
   // change p->state and then call sched.
   // Once we hold p->lock, we can be
@@ -676,11 +713,11 @@ void
 procdump(void)
 {
   static char *states[] = {
-  [UNUSED]    "unused",
-  [SLEEPING]  "sleep ",
-  [RUNNABLE]  "runble",
-  [RUNNING]   "run   ",
-  [ZOMBIE]    "zombie"
+    [UNUSED]    "unused",
+    [SLEEPING]  "sleep ",
+    [RUNNABLE]  "runble",
+    [RUNNING]   "run   ",
+    [ZOMBIE]    "zombie"
   };
   struct proc *p;
   char *state;
