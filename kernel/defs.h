@@ -162,7 +162,6 @@ void            freewalk(pagetable_t pagetable);
 void            kfreewalk(pagetable_t pagetable);
 void            kvminit(void);
 int             kvmcomminit(pagetable_t *);
-void            kvmcommunmap(pagetable_t);
 void            kvminithart(void);
 void            kvmchgpagetable(pagetable_t pagetable);
 uint64          kvmpa(uint64);

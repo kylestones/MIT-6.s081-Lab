@@ -116,8 +116,7 @@ exec(char *path, char **argv)
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
-  // 用户空间的映射删除，并重新分配
-  kvmdealloc(p->kpagetable, oldsz, 0);
+  // 直接拷贝，给进程的内核页表赋值时，没有关注是否重复映射，直接强制赋值
   if (ukvmcopy(p->pagetable, p->kpagetable, 0, p->sz) != 0) {
     goto bad;
   }

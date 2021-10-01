@@ -212,29 +212,6 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   return 0;
 }
 
-/*
- * unmap page table for the kernel pagetable.
- */
-void
-kvmcommunmap(pagetable_t pagetable)
-{
-  // uart registers
-  uvmunmap(pagetable, UART0, 1, 0);
-  // virtio mmio disk interface
-  uvmunmap(pagetable, VIRTIO0, 1, 0);
-  // CLINT
-  //uvmunmap(pagetable, CLINT, 0x10000 / PGSIZE, 0);
-  // PLIC
-  uvmunmap(pagetable, PLIC, 0x400000 / PGSIZE, 0);
-  // map kernel text executable and read-only.
-  uvmunmap(pagetable, KERNBASE, ((uint64)etext-KERNBASE) / PGSIZE, 0);
-  // map kernel data and the physical RAM we'll make use of.
-  uvmunmap(pagetable, (uint64)etext, (PHYSTOP-(uint64)etext) / PGSIZE, 0);
-  // map the trampoline for trap entry/exit to
-  // the highest virtual address in the kernel.
-  uvmunmap(pagetable, TRAMPOLINE, 1, 0);
-}
-
 // Remove npages of mappings starting from va. va must be
 // page-aligned. The mappings must exist.
 // Optionally free the physical memory.
@@ -319,27 +296,6 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   return newsz;
 }
 
-// Deallocate process kernel pages to bring the process size from oldsz to
-// newsz.  oldsz and newsz need not be page-aligned, nor does newsz
-// need to be less than oldsz.  oldsz can be larger than the actual
-// process size.  Returns the new process size.
-uint64
-kvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
-{
-  if(newsz >= oldsz)
-    return oldsz;
-
-  #if 0
-  if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
-    int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
-    // 用于释放内核页表中对于用于页表的映射，此处不可以释放物理内存
-    uvmunmap(pagetable, PGROUNDUP(newsz), npages, 0);
-  }
-  #endif
-
-  return newsz;
-}
-
 // Deallocate user pages to bring the process size from oldsz to
 // newsz.  oldsz and newsz need not be page-aligned, nor does newsz
 // need to be less than oldsz.  oldsz can be larger than the actual
@@ -380,6 +336,7 @@ freewalk(pagetable_t pagetable)
 }
 
 // Recursively free page-table pages.
+// 不关注叶子节点
 void
 kfreewalk(pagetable_t pagetable)
 {

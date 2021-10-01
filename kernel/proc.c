@@ -171,12 +171,6 @@ freeproc(struct proc *p)
   p->pagetable = 0;
 
   if (p->kpagetable) {
-    // unmap user pagetable
-    //uvmunmap(p->kpagetable, 0, PGROUNDUP(p->sz)/PGSIZE, 0);
-    // unmap kernel pagetable, not free physical pages
-    //kvmcommunmap(p->kpagetable);
-    // unmap kstack, free physical page
-    //uvmunmap(p->kpagetable, p->kstack, 1, 1);
     pte_t *pte = walk(p->kpagetable, p->kstack, 0);
     kfree((void*)PTE2PA(*pte));
     kfreewalk(p->kpagetable);
@@ -296,13 +290,13 @@ growproc(int n)
       return -1;
     }
 
+    // 进程用户空间缩小，增加对应的进程内核映射
     if (ukvmcopy(p->pagetable, p->kpagetable, p->sz, p->sz + n) != 0) {
       return -1;
     }
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
-
-    kvmdealloc(p->kpagetable, p->sz, p->sz + n);
+    // 进程用户空间缩小，对应的进程内核映射不做任何处理
   }
   p->sz = sz;
   return 0;
