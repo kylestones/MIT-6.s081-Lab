@@ -159,6 +159,7 @@ int             uartgetc(void);
 
 // vm.c
 void            freewalk(pagetable_t pagetable);
+void            kfreewalk(pagetable_t pagetable);
 void            kvminit(void);
 int             kvmcomminit(pagetable_t *);
 void            kvmcommunmap(pagetable_t);
@@ -173,6 +174,7 @@ pagetable_t     uvmcreate(void);
 void            uvminit(pagetable_t, uchar *, uint);
 uint64          uvmalloc(pagetable_t, uint64, uint64);
 uint64          uvmdealloc(pagetable_t, uint64, uint64);
+pte_t *         walk(pagetable_t pagetable, uint64 va, int alloc);
 #ifdef SOL_COW
 #else
 int             uvmcopy(pagetable_t, pagetable_t, uint64);

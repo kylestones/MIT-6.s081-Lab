@@ -172,12 +172,14 @@ freeproc(struct proc *p)
 
   if (p->kpagetable) {
     // unmap user pagetable
-    uvmunmap(p->kpagetable, 0, PGROUNDUP(p->sz)/PGSIZE, 0);
+    //uvmunmap(p->kpagetable, 0, PGROUNDUP(p->sz)/PGSIZE, 0);
     // unmap kernel pagetable, not free physical pages
-    kvmcommunmap(p->kpagetable);
+    //kvmcommunmap(p->kpagetable);
     // unmap kstack, free physical page
-    uvmunmap(p->kpagetable, p->kstack, 1, 1);
-    freewalk(p->kpagetable);
+    //uvmunmap(p->kpagetable, p->kstack, 1, 1);
+    pte_t *pte = walk(p->kpagetable, p->kstack, 0);
+    kfree((void*)PTE2PA(*pte));
+    kfreewalk(p->kpagetable);
   }
   p->kstack = 0;
   p->kpagetable = 0;
