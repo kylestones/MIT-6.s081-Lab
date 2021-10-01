@@ -116,6 +116,12 @@ exec(char *path, char **argv)
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
+  // 用户空间的映射删除，并重新分配
+  kvmdealloc(p->kpagetable, oldsz, 0);
+  if (ukvmcopy(p->pagetable, p->kpagetable, 0, p->sz) != 0) {
+    goto bad;
+  }
+
   if (p->pid == 1) {
     vmprint(p->pagetable);
   }

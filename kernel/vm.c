@@ -218,8 +218,6 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
 void
 kvmcommunmap(pagetable_t pagetable)
 {
-  printf("%s-%s-%d\n", __FILE__, __FUNCTION__, __LINE__);
-
   // uart registers
   uvmunmap(pagetable, UART0, 1, 0);
   // virtio mmio disk interface
@@ -235,7 +233,6 @@ kvmcommunmap(pagetable_t pagetable)
   // map the trampoline for trap entry/exit to
   // the highest virtual address in the kernel.
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
-  printf("%s-%s-%d\n", __FILE__, __FUNCTION__, __LINE__);
 }
 
 // Remove npages of mappings starting from va. va must be
@@ -322,6 +319,27 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   return newsz;
 }
 
+// Deallocate process kernel pages to bring the process size from oldsz to
+// newsz.  oldsz and newsz need not be page-aligned, nor does newsz
+// need to be less than oldsz.  oldsz can be larger than the actual
+// process size.  Returns the new process size.
+uint64
+kvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
+{
+  if(newsz >= oldsz)
+    return oldsz;
+
+  #if 1
+  if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
+    int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
+    // 用于释放内核页表中对于用于页表的映射，此处不可以释放物理内存
+    uvmunmap(pagetable, PGROUNDUP(newsz), npages, 0);
+  }
+  #endif
+
+  return newsz;
+}
+
 // Deallocate user pages to bring the process size from oldsz to
 // newsz.  oldsz and newsz need not be page-aligned, nor does newsz
 // need to be less than oldsz.  oldsz can be larger than the actual
@@ -368,6 +386,44 @@ uvmfree(pagetable_t pagetable, uint64 sz)
   if(sz > 0)
     uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 1);
   freewalk(pagetable);
+}
+
+// Given a parent process's page table, copy
+// its memory into a child's page table.
+// Copies both the page table and the
+// physical memory.
+// returns 0 on success, -1 on failure.
+// frees any allocated pages on failure.
+// delete PTE_U flag
+int
+ukvmcopy(pagetable_t upagetable, pagetable_t kpagetable, uint64 start, uint64 end)
+{
+  pte_t *pte;
+  pte_t *newpte;
+  uint64 pa, i;
+  uint flags;
+
+  start = PGROUNDUP(start);
+
+  for(i = start; i < end; i += PGSIZE) {
+    if((pte = walk(upagetable, i, 0)) == 0) {
+      panic("uvmcopy: pte should exist");
+      return  -1;
+    }
+    if((*pte & PTE_V) == 0) {
+      panic("uvmcopy: page not present");
+      return  -1;
+    }
+    pa = PTE2PA(*pte);
+    flags = PTE_FLAGS(*pte) & (~PTE_U);
+    //if(mappages(kpagetable, i, PGSIZE, pa, flags) != 0) {
+    if((newpte = walk(kpagetable, i, 1)) == 0) {
+      panic("uvmcopy: page not present");
+      return  -1;
+    }
+    *newpte = PA2PTE(pa) | flags;
+  }
+  return 0;
 }
 
 // Given a parent process's page table, copy
@@ -450,6 +506,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
+  return copyin_new(pagetable, dst, srcva, len);
   uint64 n, va0, pa0;
 
   while(len > 0){
@@ -476,6 +533,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
+  return copyinstr_new(pagetable, dst, srcva, max);
   uint64 n, va0, pa0;
   int got_null = 0;
 
@@ -527,6 +585,7 @@ vm_walk_print(pagetable_t pagetable, int level)
       for (int l = 1; l < level; l++) {
         printf(" ..");
       }
+      //printf("%d: pte %p pa %p fl 0x%x\n", i, pte, child, PTE_FLAGS(pte));
       printf("%d: pte %p pa %p\n", i, pte, child);
 
       if ((pte & (PTE_R|PTE_W|PTE_X)) == 0){

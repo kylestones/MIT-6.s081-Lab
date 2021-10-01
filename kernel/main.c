@@ -48,5 +48,6 @@ main()
     plicinithart();   // ask PLIC for device interrupts
   }
 
+  // 此处之前都在内核页表
   scheduler();
 }

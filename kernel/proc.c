@@ -31,7 +31,8 @@ procinit(void)
   for(p = proc; p < &proc[NPROC]; p++) {
     initlock(&p->lock, "proc");
   }
-  kvminithart();
+  // 之前就是在内核页表，此处不需要再切换页表
+  //kvminithart();
 }
 
 // Must be called with interrupts disabled,
@@ -164,17 +165,23 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  p->pagetable = 0;
+
   if (p->kpagetable) {
-    // not free physical pages
+    // unmap user pagetable
+    uvmunmap(p->kpagetable, 0, PGROUNDUP(p->sz)/PGSIZE, 0);
+    // unmap kernel pagetable, not free physical pages
     kvmcommunmap(p->kpagetable);
-    // free physical page
+    // unmap kstack, free physical page
     uvmunmap(p->kpagetable, p->kstack, 1, 1);
     freewalk(p->kpagetable);
   }
+  p->kstack = 0;
+  p->kpagetable = 0;
 
-  p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -254,6 +261,8 @@ userinit(void)
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
+  ukvmcopy(p->pagetable, p->kpagetable, 0, p->sz);
+
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -276,11 +285,22 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
+    // 用户空间不可以大于 PLIC
+    if (sz + n >= PLIC) {
+      return -1;
+    }
+
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+      return -1;
+    }
+
+    if (ukvmcopy(p->pagetable, p->kpagetable, p->sz, p->sz + n) != 0) {
       return -1;
     }
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
+
+    kvmdealloc(p->kpagetable, p->sz, p->sz + n);
   }
   p->sz = sz;
   return 0;
@@ -307,6 +327,13 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
+
+  // Copy user pagetable to kernel pagetable
+  if(ukvmcopy(np->pagetable, np->kpagetable, 0, np->sz) < 0){
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
 
   np->parent = p;
 
@@ -494,9 +521,6 @@ scheduler(void)
 
   c->proc = 0;
   for(;;){
-    // use kernel_pagetable when no process is running
-    kvminithart();
-
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
 
@@ -522,6 +546,8 @@ scheduler(void)
     }
 #if !defined (LAB_FS)
     if(found == 0) {
+      // use kernel_pagetable when no process is running
+      kvminithart();
       intr_on();
       asm volatile("wfi");
     }
