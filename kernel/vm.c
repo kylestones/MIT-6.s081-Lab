@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -101,8 +103,11 @@ walkaddr(pagetable_t pagetable, uint64 va)
     return 0;
 
   pte = walk(pagetable, va, 0);
-  if(pte == 0)
-    return 0;
+  if(pte == 0) {
+    pa = lazyalloc(va, PTE_R | PTE_W | PTE_X | PTE_U);
+    return pa;
+  }
+
   if((*pte & PTE_V) == 0)
     return 0;
   if((*pte & PTE_U) == 0)
@@ -154,8 +159,9 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   a = PGROUNDDOWN(va);
   last = PGROUNDDOWN(va + size - 1);
   for(;;){
-    if((pte = walk(pagetable, a, 1)) == 0)
-      return -1;
+    if((pte = walk(pagetable, a, 1)) == 0) {
+      continue;
+    }
     if(*pte & PTE_V)
       panic("remap");
     *pte = PA2PTE(pa) | perm | PTE_V;
@@ -180,10 +186,13 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     panic("uvmunmap: not aligned");
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
-    if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+    // dynamic allocate physical address, so maybe it not mapped
+    if((pte = walk(pagetable, a, 0)) == 0) {
+      continue;
+    }
+    if ((*pte & PTE_V) == 0) {
+      continue;
+    }
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -314,10 +323,12 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+    if((pte = walk(old, i, 0)) == 0) {
+      continue;
+    }
+    if((*pte & PTE_V) == 0) {
+      continue;
+    }
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -439,4 +450,32 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+// 需要的时候，分配新的物理页
+uint64
+lazyalloc(uint64 va, int flags)
+{
+  struct proc* p = myproc();
+  // va must small than p->sz and larger than the user stack
+  //printf("%s-%s-%d:va=%p, sp=%p, sz=%p\n", __FILE__, __FUNCTION__, __LINE__, va, p->trapframe->sp, p->sz);
+  if (va >= p->sz || va < PGROUNDUP(p->trapframe->sp)) {
+    printf("%s-%d:faild\n", __FUNCTION__, __LINE__);
+    return 0;
+  }
+
+  uint64 pa = 0;
+  if ((pa = (uint64)kalloc()) == 0) {
+    printf("%s-%d:faild\n", __FUNCTION__, __LINE__);
+    return 0;
+  }
+
+  memset((void*)pa, 0, PGSIZE);
+  if (mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, pa, flags) != 0) {
+    printf("%s-%d:faild\n", __FUNCTION__, __LINE__);
+    kfree((void*)pa);
+    return 0;
+  }
+
+  return pa;
 }
