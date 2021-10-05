@@ -71,8 +71,10 @@ kvminithart()
 pte_t *
 walk(pagetable_t pagetable, uint64 va, int alloc)
 {
-  if(va >= MAXVA)
+  if(va >= MAXVA) {
+    printf("va=%p\n", va);
     panic("walk");
+  }
 
   for(int level = 2; level > 0; level--) {
     pte_t *pte = &pagetable[PX(level, va)];
@@ -311,27 +313,51 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
+
+    /* 同样的物理内存映射到新的页表 */
     pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    flags = (PTE_FLAGS(*pte) & (~PTE_W)) | PTE_COW;;
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
+      //panic("uvmcopy: not map page");
       goto err;
     }
+
+    acquirememrefcntlock();
+    addmemrefcnt(pa);
+    releasememrefcntlock();
+
+    /* 删除原来页表的写标志，同时增加 cow 标志 */
+    *pte = ((*pte) & (~PTE_W)) | PTE_COW;
   }
   return 0;
 
  err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
+  // physical memory belongs to old pagetable, which can not free
+  printf("%s-%d:pagetable=%p, va<=%p\n", __FUNCTION__, __LINE__, new, i);
+  uvmunmap(new, 0, i / PGSIZE, 0);
+
+  uint64 index;
+  for(index = 0; index < i; index += PGSIZE){
+    if((pte = walk(old, index, 0)) == 0)
+      panic("uvmcopy: pte should exist");
+    if((*pte & PTE_V) == 0)
+      panic("uvmcopy: page not present");
+
+    pa = PTE2PA(*pte);
+
+    acquirememrefcntlock();
+    submemrefcnt(pa);
+    releasememrefcntlock();
+
+    /* 恢复原来的标志 */
+    *pte = ((*pte) | (PTE_W)) & (~PTE_COW);
+  }
   return -1;
 }
 
@@ -355,12 +381,30 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
+  pte_t *pte;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
+
+    if (va0 >= MAXVA) {
+      return -1;
+    }
+    if ((pte = walk(pagetable, va0, 0)) == 0) {
+      return -1;
+    }
+    if ((*pte & PTE_V) == 0 || (*pte & PTE_U) == 0) {
+      return -1;
+    }
+
+    pa0 = PTE2PA(*pte);
+    if (PTE_FLAGS(*pte) & PTE_COW) {
+      if (cowmethod(pte, &pa0) != 0) {
+        return -1;
+      }
+    }
     if(pa0 == 0)
       return -1;
+
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
@@ -439,4 +483,69 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+int
+cowmethod(pte_t *pte, uint64 *newpa)
+{
+  char *mem;
+  uint flags = PTE_FLAGS(*pte);
+  uint64 pa = PTE2PA(*pte);
+
+  acquirememrefcntlock();
+  uint refcnt = getmemrefcnt(pa);
+
+  if (refcnt > 1) {
+    if ((mem = kalloc()) == 0) {
+      releasememrefcntlock();
+      return -1;
+    }
+    memmove(mem, (char*)pa, PGSIZE);
+
+    submemrefcnt(pa);
+
+    // 重新映射到新的物理地址
+    flags = (flags & (~PTE_COW)) | PTE_W;
+    *pte = PA2PTE((uint64)mem) | flags;
+
+    if (newpa) {
+      *newpa = (uint64)mem;
+    }
+
+  } else if (refcnt == 1) {
+    // 修改 flag 为可写
+    *pte = ((*pte) & (~PTE_COW)) | PTE_W;
+
+  } else {
+    printf("error::%s-%d:pte=%p, *pte=%p\n", __FUNCTION__, __LINE__, pte, *pte);
+    releasememrefcntlock();
+    return -1;
+  }
+
+  releasememrefcntlock();
+  return 0;
+}
+
+int
+copyonwrite(pagetable_t pagetable, uint64 va)
+{
+  pte_t *pte;
+
+  if ((pte = walk(pagetable, va, 0)) == 0) {
+    panic("copyonwrite: pte should exist");
+    return -1;
+  }
+  if ((*pte & PTE_V) == 0) {
+    panic("copyonwrite: page not present");
+    return -1;
+  }
+
+  if (PTE_FLAGS(*pte) & PTE_COW) {
+    return cowmethod(pte, 0);
+
+  } else {
+    return -1;
+  }
+
+  return 0;
 }
